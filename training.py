@@ -14,12 +14,18 @@ import random
 import pickle
 import argparse
 import time
+from functools import lru_cache
+import sys
+import re
+from collections import defaultdict, Counter
+from tqdm import tqdm   
+import bpe_module
 
 parser = argparse.ArgumentParser(description='Welcome to Sup.AI!')
 
 #add arguments to the parser, with specified expected types
 parser.add_argument('-batch_size', type=str, required=True, help='Please provide a -batch_size')
-parser.add_argument('-max', type=str, required=True, help='Please provide a -max(max_iters)')
+parser.add_argument('-max', type=str, required=False, default=1000, help='Please provide a -max(max_iters)')
 
 args = parser.parse_args()
 
@@ -38,10 +44,13 @@ learning_rate = 3e-4
 eval_iters = 100
 dropout = 0.2
 n_embd = 384 #Vector Categories Number
-n_layer = 4 #current layers dimensions for all the heads
-n_head = 4 #current heads in parrellel
+n_layer = 7 #current layers dimensions for all the heads
+n_head = 7 #current heads in parrellel
 
 print(device)
+
+with open('bpe.pkl', 'rb') as f:
+    bpe_merges = pickle.load(f)
 
 #manual seed for torch
 
@@ -57,11 +66,63 @@ vocab_size = len(chars)
 
 #print(vocabulary_size)
 
+#BPE Model Initialized
+num_merges = 777
+bpe_merges = bpe_module.train_bpe(text, num_merges)
+
 #encode and decode fuctions
 stoi = { ch:i for i,ch in enumerate(chars) }
 itos = { i:ch for i,ch in enumerate(chars) }
-encode = lambda s: [stoi[c] for c in s]
-decode = lambda l: ''.join([itos[i] for i in l])
+@lru_cache(maxsize=1024)
+def encode(s):
+    #print(f"Encoding string: {s}")  # Debugging line
+    encoded = [stoi.get(c, -1) for c in bpe_module.encode_bpe(s, bpe_merges)]
+    #print(f"Encoded list: {encoded}")  # Debugging line
+    return encoded
+
+@lru_cache(maxsize=1024)
+def decode(l):
+    #return ''.join(itos.get(i, '') for i in l)  # Skip unknown indices
+    bpe_string = ' '.join([itos.get(i, '') for i in tuple(l)])  # Convert list to tuple
+    return bpe_module.decode_bpe(bpe_string)
+
+# Error handling in encoding and decoding
+def safe_encode(s):
+    encoded = []
+    for c in s:
+        encoded.append(stoi.get(c, -1))  # Use -1 for unknown characters
+    return encoded
+
+def safe_decode(l):
+    decoded = []
+    for i in l:
+        decoded.append(itos.get(i, ''))  # Skip unknown indices
+    return ''.join(decoded)
+
+# Regular expression for advanced text patterns
+def regex_encode():
+    encoded = []
+    for token in re.findall(r'\w+|\s|.', s):  # Words, whitespace, other characters
+        for c in token:
+            encoded.append(stoi.get(c, -1))
+    return encoded
+
+# Basic BPE Implementation
+def build_bpe_pairs(text, num_merges):
+    pairs = {}
+    for i in range(len(text) - 1):
+        pair = (text[i], text[i + 1])
+        pairs[pair] = pairs.get(pair, 0) + 1
+
+    for _ in range(num_merges):
+        best_pair = max(pairs, key=pairs.get)
+        # Merge the best pair in the text and update pairs
+        # ...
+
+    return pairs
+
+#encode = lambda s: [stoi[c] for c in s]
+#decode = lambda l: ''.join([itos[i] for i in l])
 
 #data = torch.tensor(encode(text), dtype=torch.long)
 #small_size_training
@@ -85,8 +146,10 @@ def get_random_chunk(split):
             block = mm.read(block_size*batch_size-1)
             #Decode block to string, ignores byte sequences
             decoded_block = block.decode('utf-8', errors='ignore').replace('\r','')
+            #print(f"Decoded block: {decoded_block}")
             #Train and test Splits
             data = torch.tensor(encode(decoded_block), dtype=torch.long)
+            #print(f"Encoded data tensor: {data}")  # Debugging line
 
     return data
 
@@ -264,7 +327,7 @@ with open('model-01.pk1', 'rb') as f:
     model = pickle.load(f)
 print('loaded')
 
-m = model.to(device)
+model = model.to(device)
 
 start_time = time.time()
 # Pytorch Optimizer
@@ -287,6 +350,8 @@ print(loss.item())
 
 with open('model-01.pk1', 'wb') as f:
     pickle.dump(model, f)
+with open('bpe.pkl', 'wb') as f:
+    pickle.dump(bpe_merges, f)
 print('saved') 
 
 end_time = time.time()
